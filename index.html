@@ -2675,11 +2675,9 @@ function dateSecoursTs(){
   return mois===null ? null : new Date(+m[3], mois, +m[1]);
 }
 /* null → page à appliquer ; sinon → message expliquant qu'elle est trop vieille */
-function pageTropVieille(html){
-  const dPage = extraireDateMajPage(html), dSec = dateSecoursTs();
-  if (!dPage || !dSec || dPage >= dSec) return null;
-  return 'page de la ligue du ' + dPage.toLocaleDateString('fr-CA')
-       + ' — plus vieille que les données intégrées du ' + DATE_SECOURS + ', conservées';
+function etiquetteDatePage(html){
+  const d = extraireDateMajPage(html);
+  return d ? d.toLocaleDateString('fr-CA') : null;
 }
 
 async function chercherSource(cle, valider){
@@ -2746,11 +2744,8 @@ async function actualiserTout(){
   ETAPE_MAJ = 'formation —'; etat.textContent = 'formation…';
   try{
     const {texte, essais} = await chercherSource('roster', validerPageEquipe);
-    const vieille = pageTropVieille(texte);
-    const joueurs = vieille ? [] : parseRoster(texte);
-    if (vieille){
-      rapport.push('formation : ' + vieille);
-    } else if (joueurs.length >= 10){
+    const joueurs = parseRoster(texte);
+    if (joueurs.length >= 10){
       ETAT.roster = joueurs; preparerRoster();
       const f = extraireFiche(texte); if (f) ETAT.fiche = f;
       ETAT.source = 'ushl.ca — ' + new Date().toLocaleString('fr-CA');
@@ -2761,11 +2756,8 @@ async function actualiserTout(){
   ETAPE_MAJ = 'contrats —'; etat.textContent = 'contrats…';
   try{
     const {texte, essais} = await chercherSource('finance', validerPageEquipe);
-    const vieilleFin = pageTropVieille(texte);
-    const contrats = vieilleFin ? new Map() : parseFinance(texte);
-    if (vieilleFin){
-      rapport.push('contrats : ' + vieilleFin);
-    } else if (contrats.size >= 5){
+    const contrats = parseFinance(texte);
+    if (contrats.size >= 5){
       let maj = 0, echus = 0;
       for (const j of ETAT.roster){
         const fin = contrats.get(normaliserNom(j.nom));
@@ -4209,6 +4201,71 @@ function construireCharte(){
 construireCharte();
 
 /* ---------- Navigation et initialisation ---------- */
+/* =====================================================================
+   ALIMENTATION LOCALE : data/rosters.json, produit côté serveur par
+   .github/workflows/rosters.yml. Même origine → ni CORS ni relais public,
+   donc ça fonctionne aussi sur mobile. Si le fichier manque ou est
+   illisible, on garde silencieusement le bloc intégré (SECOURS_ROSTER).
+   ===================================================================== */
+const CHEMIN_ROSTERS = 'data/rosters.json';
+
+/* Applique un data/rosters.json déjà analysé. Renvoie le nombre d'équipes
+   remplacées, ou null si la charge est inexploitable. Ne touche à rien
+   tant qu'une équipe n'a pas au moins 10 joueurs (garde-fou anti-page vide). */
+function appliquerRosters(data){
+  if (!data || typeof data !== 'object' || !data.equipes) return null;
+  let nEquipes = 0;
+  for (const e of LIGUE){
+    const src = data.equipes[e.c];
+    if (!src || !Array.isArray(src.joueurs) || src.joueurs.length < 10) continue;
+    e.j = src.joueurs
+      .filter(j => !j.horsAlignement)
+      .map(j => LIGUE_COLS.map(c => (j[c] === undefined ? null : j[c])));
+    nEquipes++;
+  }
+  /* Un joueur n'appartient qu'à un club : ceux que la charge attribue à une
+     équipe sont retirés des blocs non couverts par la charge, sinon un joueur
+     échangé resterait listé des deux côtés (et fausserait le constructeur). */
+  if (nEquipes){
+    const revendiques = new Map();
+    for (const e of LIGUE){
+      if (!data.equipes[e.c]) continue;
+      for (const t of e.j) revendiques.set(t[0], e.c);
+    }
+    for (const e of LIGUE){
+      if (data.equipes[e.c]) continue;
+      e.j = e.j.filter(t => !revendiques.has(t[0]));
+    }
+  }
+
+  const mien = data.equipes[CONFIG.equipe];
+  if (mien && Array.isArray(mien.joueurs) && mien.joueurs.length >= 10){
+    ETAT.roster = mien.joueurs.map(j => ({...j}));
+    preparerRoster();
+    if (mien.fiche) ETAT.fiche = mien.fiche;
+    ETAT.source = 'ushl.ca du ' + (data.maj || 'date inconnue');
+  }
+  return nEquipes;
+}
+
+async function chargerRostersLocaux(){
+  try{
+    const rep = await fetch(CHEMIN_ROSTERS, {cache:'no-store'});
+    if (!rep.ok) throw new Error('HTTP ' + rep.status);
+    const data = await rep.json();
+    const n = appliquerRosters(data);
+    if (!n) throw new Error('aucune équipe exploitable');
+    const el = document.getElementById('dateSecours');
+    if (el) el.textContent = (data.maj || 'date inconnue') + ' — ' + n + ' équipes';
+    const d = document.getElementById('txDateFichier');
+    if (d) d.textContent = 'ushl.ca, relevé du ' + (data.maj || '?');
+    toutRendre();
+    return {ok:true, equipes:n, maj:data.maj};
+  }catch(e){
+    return {ok:false, raison:e.message};
+  }
+}
+
 function toutRendre(){
   rendreAlignement();
   if (typeof window !== 'undefined' && window.__txPret) rendreTransactions();
@@ -4950,12 +5007,17 @@ function attacherTransactions(){
 attacherTransactions();
 rendreTransactions();
 
+/* Dernier geste du démarrage : tenter le fichier local produit par l'Action.
+   Asynchrone et non bloquant — l'interface est déjà utilisable avec le bloc intégré. */
+chargerRostersLocaux();
+
 /* exposition pour le harnais de tests (jsdom) */
 if (typeof window !== 'undefined'){
   window.__SJS__ = {parseRoster, parseScoring, parseXtra, determinerProfil, evaluerStat,
     normaliserNom, seuilsPour, seuilsMatrice, statutSelonSeuils, valeurStat, calculerPmRangs,
     modA, convertirJet, fourchetteRecote, modsEstime, matchsEquipe, xtraEstArchive, productionDe, ETAT,
     extraireFiche, validerPageEquipe, CONFIG, CLES_LS, parseFinance,
+    appliquerRosters, chargerRostersLocaux, CHEMIN_ROSTERS, toutRendre, preparerRoster,
     litCompo, ecritCompo, joueursComposition, rendreComposition,
     litTrios, ecritTrios, validerAlignementTrios, rendreTrios, proposerTrios, TRIOS_VIDES,
     LIGUE, LIGUE_COLS, ligueFiche, ligueJoueurs, ligueNom, ligueVille, ovGardien, OV_ORDRE_G,

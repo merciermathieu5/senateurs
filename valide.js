@@ -1519,6 +1519,54 @@ const ROSTER_FIXTURE = [
   ok(doc.querySelector('#txVerdict').textContent.includes('Aucun joueur'), 'Verdict revenu à l\'état vide');
   egal(doc.getElementById('txEqB').value, 'SEATTLE', 'Le comparateur garde son équipe après le vidage');
 
+
+  /* ============ ALIMENTATION LOCALE (data/rosters.json) ============ */
+  console.log('— Chargement du fichier produit par l\'Action');
+  {
+    const refJ = S.SECOURS_ROSTER.map(j=>({...j}));
+    const charge = {
+      maj: 'test 1 2026',
+      equipes: {
+        [S.CONFIG.equipe]: {
+          fiche: S.CONFIG.equipe + ' 9-1-0',
+          joueurs: refJ.map((j,i)=> i===0 ? {...j, ov: j.ov, nom: j.nom} : j)
+        }
+      }
+    };
+    egal(typeof S.appliquerRosters, 'function', 'appliquerRosters exposée');
+    egal(S.appliquerRosters(null), null, 'Charge nulle : rien appliqué');
+    egal(S.appliquerRosters({}), null, 'Charge sans « equipes » : rien appliqué');
+    egal(S.appliquerRosters({equipes:{}}), 0, 'Aucune équipe connue : 0 remplacement');
+
+    // charge tronquée : sous le seuil de 10 joueurs, on ne touche à rien
+    const avant = S.ETAT.roster.length;
+    egal(S.appliquerRosters({equipes:{[S.CONFIG.equipe]:{joueurs:[{nom:'Bidon',ov:50}]}}}), 0,
+      'Équipe sous le seuil : ignorée');
+    egal(S.ETAT.roster.length, avant, 'Roster inchangé après une charge tronquée');
+    ok(S.ETAT.roster.every(j=>j.nom!=='Bidon'), 'Aucun joueur bidon injecté');
+
+    // charge valide
+    const n = S.appliquerRosters(charge);
+    ok(n >= 1, 'Au moins une équipe remplacée');
+    egal(S.ETAT.fiche, S.CONFIG.equipe + ' 9-1-0', 'Fiche reprise de la charge');
+    ok(S.ETAT.source.includes('ushl.ca'), 'Source signalée comme venant de ushl.ca');
+    ok(S.ETAT.roster.every(j=>j._profil), 'Profils recalculés après application');
+    egal(S.ligueJoueurs(S.CONFIG.equipe).length,
+      refJ.filter(j=>!j.horsAlignement).length, 'Bloc LIGUE du club synchronisé');
+    egal(S.LIGUE.length, 32, 'Les 32 formations sont conservées');
+    {
+      const vus = new Set(); let doubles = 0;
+      S.LIGUE.forEach(e=>e.j.forEach(t=>{ if(vus.has(t[0])) doubles++; vus.add(t[0]); }));
+      egal(doubles, 0, 'Aucun joueur en double après application');
+    }
+    ok(S.LIGUE.every(e=>e.j.every(t=>t.length===S.LIGUE_COLS.length)),
+      'Fiches compactes toujours au bon nombre de colonnes');
+
+    // remise en état pour la suite du harnais
+    S.ETAT.roster = refJ.map(j=>({...j}));
+    S.preparerRoster();
+  }
+
   console.log(`\n${total - echecs}/${total} vérifications réussies`);
   process.exit(echecs ? 1 : 0);
 })().catch(e => { console.error('ERREUR FATALE', e); process.exit(1); });
